@@ -1,0 +1,1 @@
+# 本插件无需额外依赖：aiohttp 随 AstrBot 提供
