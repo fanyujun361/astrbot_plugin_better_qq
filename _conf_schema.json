@@ -1,0 +1,140 @@
+{
+  "enabled": {
+    "description": "总开关：启用本插件全部功能",
+    "type": "bool",
+    "default": true
+  },
+  "image": {
+    "description": "图片修复与补图",
+    "type": "object",
+    "hint": "解决 SnowLuma 图片缺 rkey、当前消息没图时补最近图、引用图补入",
+    "items": {
+      "snowluma_api": {
+        "description": "SnowLuma HTTP API 地址",
+        "type": "string",
+        "default": "http://127.0.0.1:3000",
+        "hint": "默认 http://127.0.0.1:3000"
+      },
+      "snowluma_token": {
+        "description": "SnowLuma HTTP token（留空自动读取本机配置）",
+        "type": "string",
+        "default": "",
+        "hint": "其他用户手动填写；本机 SnowLuma 会自动读取"
+      },
+      "fix_rkey": {
+        "description": "补全图片 rkey 链接",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后 SnowLuma 传来的缺 rkey 图片可能下载失败"
+      },
+      "inject_recent_images": {
+        "description": "当前消息没图时，自动补最近群图片",
+        "type": "bool",
+        "default": true
+      },
+      "reply_image": {
+        "description": "引用（回复）某张图时，也把被引用的图补进来",
+        "type": "bool",
+        "default": true
+      },
+      "lookback_seconds": {
+        "description": "补图时间窗（秒）",
+        "type": "int",
+        "default": 180,
+        "hint": "只补这个时间范围内发过的图片，默认 180 秒"
+      },
+      "max_recent_images": {
+        "description": "每次最多补几张最近的图",
+        "type": "int",
+        "default": 2
+      }
+    }
+  },
+  "dialog": {
+    "description": "回复与引用",
+    "type": "object",
+    "hint": "顶号消息补入、引用概率等回复相关设置",
+    "items": {
+      "inject_self_messages": {
+        "description": "群聊：补入自己账号发过的消息（顶号发言时用）",
+        "type": "bool",
+        "default": true
+      },
+      "self_msg_window": {
+        "description": "群聊：补自身消息的时间窗（秒）",
+        "type": "int",
+        "default": 900
+      },
+      "self_msg_max": {
+        "description": "群聊：每次最多补几条",
+        "type": "int",
+        "default": 3
+      },
+      "inject_self_messages_private": {
+        "description": "私聊：补入自己账号发过的消息",
+        "type": "bool",
+        "default": true
+      },
+      "self_msg_window_private": {
+        "description": "私聊：补自身消息的时间窗（秒）",
+        "type": "int",
+        "default": 900
+      },
+      "self_msg_max_private": {
+        "description": "私聊：每次最多补几条",
+        "type": "int",
+        "default": 3
+      },
+      "quote_first_in_turn": {
+        "description": "每条新消息的第一条回复强制引用（按对方消息 ID）",
+        "type": "bool",
+        "default": true,
+        "hint": "有人 @ 机器人时也必定引用"
+      },
+      "quote_probability_group": {
+        "description": "群聊：同一条消息后续回复的引用概率（0~1）",
+        "type": "float",
+        "default": 0.25
+      },
+      "quote_probability_private": {
+        "description": "私聊：同一条消息后续回复的引用概率（0~1）",
+        "type": "float",
+        "default": 0.25
+      }
+    }
+  },
+  "context": {
+    "description": "上下文补全",
+    "type": "object",
+    "hint": "只 @ 不带文字时，补充最近聊天内容",
+    "items": {
+      "empty_at_hint": {
+        "description": "只 @ 不带文字时，注入最近聊天上下文",
+        "type": "bool",
+        "default": true
+      },
+      "empty_at_context_count": {
+        "description": "空 @ 时附带几条最近的聊天记录",
+        "type": "int",
+        "default": 5
+      }
+    }
+  },
+  "scope": {
+    "description": "生效范围",
+    "type": "object",
+    "items": {
+      "scope_groups": {
+        "description": "生效的群号列表（留空表示所有群）",
+        "type": "list",
+        "default": [
+          "194185111",
+          "973978829"
+        ],
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
