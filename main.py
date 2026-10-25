@@ -50,12 +50,12 @@ DEFAULTS = {
     "self_msg_max_private": 3,
     "quote_probability_group": 0.25,
     "quote_probability_private": 0.25,
-    "quote_first_in_turn": True,
+    "quote_private_min_length": 15,
+    "quote_private_quote_media": True,
     "scope_groups": ["194185111", "973978829"],
 }
 
 _cache: dict[str, tuple[str | None, float]] = {}
-_quoted_msg_ids: dict[str, float] = {}
 _last_history_fetch: dict[str, float] = {}
 
 
@@ -443,31 +443,32 @@ class QQImageFix(Star):
                 else cfg.get("quote_probability_group", 0.25)
             )
 
-            # 1) 有人 @ 机器人：必引用
+            comps = event.get_messages() or []
+            has_media = any(isinstance(c, Image) for c in comps)
+            plain_text = "".join(
+                str(getattr(c, "text", "") or "") for c in comps if isinstance(c, Plain)
+            )
             force = False
             self_id = ""
             try:
                 self_id = str(event.get_self_id() or "")
             except Exception:
                 pass
+            # 群聊：被 @ 必引用
             if self_id:
-                for comp in event.get_messages() or []:
+                for comp in comps:
                     if isinstance(comp, At) and str(getattr(comp, "qq", "")) == self_id:
                         force = True
                         break
 
-            # 2) 每条新消息（按对方消息 ID）的第一条回复：必引用
-            msg_id = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "")
-            now = time.time()
-            if not force and cfg.get("quote_first_in_turn", True) and msg_id:
-                if msg_id not in _quoted_msg_ids:
-                    force = True
-                    _quoted_msg_ids[msg_id] = now
-                    if len(_quoted_msg_ids) > 500:
-                        for old_key in sorted(_quoted_msg_ids, key=_quoted_msg_ids.get)[:200]:
-                            _quoted_msg_ids.pop(old_key, None)
-
-            if not force and (prob <= 0 or random.random() >= prob):
+            if is_private:
+                # 私聊：只对"长消息 / 带图消息"引用，短句不引用（群聊不受此规则影响）
+                min_len = int(cfg.get("quote_private_min_length", 15))
+                quote_media = bool(cfg.get("quote_private_quote_media", True))
+                if not ((quote_media and has_media) or len(plain_text) >= min_len):
+                    return
+                force = True
+            elif not force and (prob <= 0 or random.random() >= prob):
                 return
             result = event.get_result()
             if result is None or not result.chain:
