@@ -47,7 +47,8 @@
 | `inject_self_messages_private` | 开 | 私聊：补顶号消息 |
 | `self_msg_window_private` | 900 | 私聊时间窗 |
 | `self_msg_max_private` | 3 | 私聊最多几条 |
-| `quote_first_in_turn` | 开 | 每条新消息首条回复必引用（@ 也必引用） |
+| `quote_private_min_length` | 15 | 私聊：消息至少多少字才引用（短句不引用） |
+| `quote_private_quote_media` | 开 | 私聊：带图片的消息也引用 |
 | `quote_probability_group` | 0.25 | 群聊后续回复引用概率 |
 | `quote_probability_private` | 0.25 | 私聊后续回复引用概率 |
 
