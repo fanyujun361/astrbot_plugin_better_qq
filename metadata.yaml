@@ -2,7 +2,7 @@ name: better_qq
 display_name: 更好的QQ体验
 short_desc: 修图片 rkey、补上下文图/引用图、补顶号消息、概率引用
 desc: 面向 SnowLuma + AstrBot 的 QQ 聊天体验增强：修复图片缺 rkey 导致看不到图；补最近图片与被引用图片；只 @ 时补聊天上下文；把主人顶号发的消息补进上下文（群聊/私聊）；按概率引用回复。所有功能可在配置里开关。
-version: 1.0.0
-author: local
+version: 1.1.0
+author: fanyujun361
 repo: "https://github.com/fanyujun361/astrbot_plugin_better_qq"
 astrbot_version: ">=4.16"
