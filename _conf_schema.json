@@ -85,12 +85,6 @@
         "type": "int",
         "default": 3
       },
-      "quote_first_in_turn": {
-        "description": "每条新消息的第一条回复强制引用（按对方消息 ID）",
-        "type": "bool",
-        "default": true,
-        "hint": "有人 @ 机器人时也必定引用"
-      },
       "quote_probability_group": {
         "description": "群聊：同一条消息后续回复的引用概率（0~1）",
         "type": "float",
@@ -100,6 +94,17 @@
         "description": "私聊：同一条消息后续回复的引用概率（0~1）",
         "type": "float",
         "default": 0.25
+      },
+      "quote_private_min_length": {
+        "description": "私聊：消息至少多少字才引用",
+        "type": "int",
+        "default": 15,
+        "hint": "短句（低于该字数）不引用；群聊不受影响"
+      },
+      "quote_private_quote_media": {
+        "description": "私聊：带图片/gif 的消息也引用",
+        "type": "bool",
+        "default": true
       }
     }
   },
