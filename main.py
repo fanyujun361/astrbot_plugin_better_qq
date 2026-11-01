@@ -76,6 +76,7 @@ DEFAULTS = {
     "multi_reply_keywords": "分别回复,每条评论,每个评论,一条条,逐条,分别回",
     "multi_reply_max": 12,
     "multi_reply_delay": 3.0,
+    "multi_reply_image_window": 180,
 }
 
 _cache: dict[str, tuple[str | None, float]] = {}
@@ -453,6 +454,7 @@ class QQImageFix(Star):
         self._fu_hour: dict[tuple[str, str], int] = {}
         self._fu_day: dict[tuple[str, str], int] = {}
         self._mr_pending: dict[str, float] = {}
+        self._mr_last_img: dict[str, float] = {}
         self._mr_queue: dict[str, list[str]] = {}
         self._mr_tasks: set = set()
         try:
@@ -551,11 +553,21 @@ class QQImageFix(Star):
                 try:
                     _txt = str(event.message_str or "").strip()
                     _kws = [k.strip() for k in str(cfg.get("multi_reply_keywords", "") or "").split(",") if k.strip()]
-                    _has_img = any(isinstance(x, Image) for x in (event.get_messages() or []))
-                    if _has_img and _kws and any(k in _txt for k in _kws):
+                    _msg_list = event.get_messages() or []
+                    _has_img = any(isinstance(x, Image) for x in _msg_list)
+                    _now = time.time()
+                    if _has_img:
+                        self._mr_last_img[event.unified_msg_origin] = _now
+                    _window = float(cfg.get("multi_reply_image_window", 180) or 180)
+                    _recent_img = (
+                        not _has_img
+                        and _window > 0
+                        and _now - self._mr_last_img.get(event.unified_msg_origin, 0) <= _window
+                    )
+                    if (_has_img or _recent_img) and _kws and any(k in _txt for k in _kws):
                         self._mr_pending[event.unified_msg_origin] = time.time()
                         _hint = (
-                            "\n[系统指令：对方要求你逐条回复他截图里的每一条评论。"
+                            "\n[系统指令：对方要求你逐条回复他刚才发的那张截图里的每一条评论（截图可能在上一条消息里）。"
                             "请按截图从上到下的顺序逐条回应，每条之间用 ||| 分隔，每条不超过 60 字；"
                             "不要编号、不要解释、不要遗漏；只输出这些回复。]"
                         )
