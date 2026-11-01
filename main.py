@@ -70,6 +70,11 @@ DEFAULTS = {
     "followup_hourly_limit": 3,
     "followup_daily_limit": 10,
     "followup_quiet_hours": "1-8",
+    # 多评论逐条回复
+    "multi_reply_enable": True,
+    "multi_reply_keywords": "分别回复,每条评论,每个评论,一条条,逐条,分别回",
+    "multi_reply_max": 12,
+    "multi_reply_delay": 3.0,
 }
 
 _cache: dict[str, tuple[str | None, float]] = {}
@@ -446,6 +451,9 @@ class QQImageFix(Star):
         self._fu_ctx: dict[str, list[str]] = {}
         self._fu_hour: dict[tuple[str, str], int] = {}
         self._fu_day: dict[tuple[str, str], int] = {}
+        self._mr_pending: dict[str, float] = {}
+        self._mr_queue: dict[str, list[str]] = {}
+        self._mr_tasks: set = set()
         try:
             _install_patch()
             logger.info("[better_qq] 补丁已安装")
@@ -537,6 +545,26 @@ class QQImageFix(Star):
                 else cfg.get("quote_probability_group", 0.25)
             )
 
+            # 多评论逐条回复：用户带截图并要求逐条回应
+            if cfg.get("multi_reply_enable", True):
+                try:
+                    _txt = str(event.message_str or "").strip()
+                    _kws = [k.strip() for k in str(cfg.get("multi_reply_keywords", "") or "").split(",") if k.strip()]
+                    _has_img = any(isinstance(x, Image) for x in (event.get_messages() or []))
+                    if _has_img and _kws and any(k in _txt for k in _kws):
+                        self._mr_pending[event.unified_msg_origin] = time.time()
+                        _hint = (
+                            "\n[系统指令：对方要求你逐条回复他截图里的每一条评论。"
+                            "请按截图从上到下的顺序逐条回应，每条之间用 ||| 分隔，每条不超过 60 字；"
+                            "不要编号、不要解释、不要遗漏；只输出这些回复。]"
+                        )
+                        try:
+                            req.prompt = (req.prompt or "") + _hint
+                        except Exception:
+                            pass
+                        logger.info("[better_qq] 已启用逐条回复模式")
+                except Exception:
+                    pass
             comps = event.get_messages() or []
             has_media = any(isinstance(c, Image) for c in comps)
             plain_text = "".join(
@@ -716,6 +744,67 @@ class QQImageFix(Star):
             self._fu_pending[event.unified_msg_origin] = (user, bot, time.time())
         except Exception as e:
             logger.warning(f"[better_qq] followup capture: {e}")
+
+    @filter.on_llm_response()
+    async def _mr_capture(self, event: AstrMessageEvent, response=None):
+        """逐条回复：拆分模型输出，只留第一条给主流程发，其余排队。"""
+        try:
+            umo = event.unified_msg_origin
+            if umo not in self._mr_pending:
+                return
+            cfg = _load_cfg()
+            text = getattr(response, "completion_text", "") or ""
+            self._mr_pending.pop(umo, None)
+            if "|||" not in text:
+                return
+            parts = [p.strip() for p in text.split("|||") if p.strip()]
+            if len(parts) <= 1:
+                return
+            max_n = max(1, int(cfg.get("multi_reply_max", 12)))
+            parts = parts[:max_n]
+            try:
+                response.completion_text = parts[0]
+            except Exception:
+                return
+            self._mr_queue[umo] = parts[1:]
+            self._fu_pending.pop(umo, None)
+            logger.info(f"[better_qq] 逐条回复：共 {len(parts)} 条，先发第 1 条")
+        except Exception as e:
+            logger.warning(f"[better_qq] multi_reply capture: {e}")
+
+    @filter.after_message_sent()
+    async def _mr_after(self, event: AstrMessageEvent):
+        try:
+            umo = event.unified_msg_origin
+            rest = self._mr_queue.pop(umo, None)
+            if not rest:
+                return
+            cfg = _load_cfg()
+            task = asyncio.create_task(self._mr_run(umo, rest, cfg))
+            self._mr_tasks.add(task)
+            task.add_done_callback(self._mr_tasks.discard)
+        except Exception as e:
+            logger.warning(f"[better_qq] multi_reply after: {e}")
+
+    async def _mr_run(self, umo: str, parts: list[str], cfg: dict) -> None:
+        """逐条发送剩余回复；中途用户发新消息就停。"""
+        delay = max(0.5, float(cfg.get("multi_reply_delay", 3.0)))
+        start = time.time()
+        sent = 1
+        try:
+            for text in parts:
+                await asyncio.sleep(delay)
+                if self._fu_last_user.get(umo, 0) > start:
+                    logger.info("[better_qq] 逐条回复：收到新消息，停止剩余发送")
+                    return
+                text = self._fu_clean(text, 80)
+                if not text:
+                    continue
+                await self.context.send_message(umo, MessageChain([Plain(text=text)]))
+                sent += 1
+                logger.info(f"[better_qq] 逐条回复第 {sent} 条: {text[:40]}")
+        except Exception as e:
+            logger.warning(f"[better_qq] multi_reply run: {e}")
 
     @filter.after_message_sent()
     async def _fu_after(self, event: AstrMessageEvent):
