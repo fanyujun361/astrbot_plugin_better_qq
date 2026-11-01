@@ -70,6 +70,7 @@ DEFAULTS = {
     "followup_hourly_limit": 3,
     "followup_daily_limit": 10,
     "followup_quiet_hours": "1-8",
+    "followup_question_words": "吗,呢,吧,多少,什么,为什么,怎么,哪,几点,有没有,没",
     # 多评论逐条回复
     "multi_reply_enable": True,
     "multi_reply_keywords": "分别回复,每条评论,每个评论,一条条,逐条,分别回",
@@ -831,6 +832,16 @@ class QQImageFix(Star):
                 return
             if "\n" in bot or len(bot) >= int(cfg.get("followup_max_reply_chars", 60)):
                 return
+            # 主回复已经在反问/提问时不再补，避免连环问
+            if "？" in bot or "?" in bot:
+                return
+            # 用户发的是图片/截图时不自动补话（交给逐条回复或正常回复）
+            try:
+                from astrbot.api.message_components import Image as _Img
+                if any(isinstance(x, _Img) for x in (event.get_messages() or [])):
+                    return
+            except Exception:
+                pass
             task = asyncio.create_task(self._fu_run(umo, user, bot, _ts))
             self._fu_tasks.add(task)
             task.add_done_callback(self._fu_tasks.discard)
@@ -846,6 +857,12 @@ class QQImageFix(Star):
                 return True
             if lines >= int(cfg.get("followup_min_lines", 2)) and len(s) >= int(cfg.get("followup_min_chars", 12)):
                 return True
+            # 中文常不带问号：统计疑问词出现次数，≥2 且句子不太短也算多问题
+            words = [w.strip() for w in str(cfg.get("followup_question_words", "") or "").split(",") if w.strip()]
+            if words and len(s) >= 6:
+                hits = sum(s.count(w) for w in words)
+                if hits >= 2:
+                    return True
             return False
         except Exception:
             return False
@@ -895,10 +912,16 @@ class QQImageFix(Star):
             ctx_text = "\n".join(ctx_lines[-3:]) if ctx_lines else ""
             prompt = (
                 "最近对话：\n" + (ctx_text or "（无）")
-                + "\n\n对方刚发来的消息：\n" + (user or "")[:300]
-                + "\n\n你已经回过：\n" + (bot or "")[:200]
+                + "\n\n对方刚发来的消息：\n" + (user or "")[:500]
+                + "\n\n你已经回过：\n" + (bot or "")[:300]
                 + "\n\n" + style_hint
-                + f"\n要求：一句话、{max_chars} 字以内、像真人打字、不要重复刚才说过的、不用 emoji、不用（笑）。只输出这句话。"
+                + "\n规则："
+                + "\n1) 先判断：主回复是否已经把对方所有问题/内容都答到了；都答到了就只输出 <none>。"
+                + "\n2) 只补真正漏掉的那一点（另一个问题、另一件事、没接住的情绪），不要泛泛关心，不要重复主回复，不要总结。"
+                + "\n3) 不要反问、不要催对方回答。"
+                + f"\n4) 一句话、{max_chars} 字以内、像真人打字；不要 emoji、不要（笑）。"
+                + "\n5) 不要用「嗯、哦、其实、不过、话说回来」开头。"
+                + "\n只输出这句话，或只输出 <none>。"
             )
             system_prompt = await self._fu_persona_prompt(umo)
             extra = str(cfg.get("followup_extra_prompt", "") or "").strip()
