@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -20,7 +21,7 @@ import time
 import aiohttp
 
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import At, Image, Plain, Reply
 from astrbot.api.star import Context, Star, register
 
@@ -53,6 +54,22 @@ DEFAULTS = {
     "quote_private_min_length": 15,
     "quote_private_quote_media": True,
     "scope_groups": ["194185111", "973978829"],
+    # ---- 自动补话（合并自原 auto_followup 插件）----
+    "followup_enable": False,
+    "followup_private_only": True,
+    "followup_delay_seconds": 1.6,
+    "followup_cooldown_seconds": 120,
+    "followup_min_questions": 2,
+    "followup_min_lines": 2,
+    "followup_min_chars": 12,
+    "followup_max_reply_chars": 60,
+    "followup_max_send_chars": 40,
+    "followup_use_persona": True,
+    "followup_extra_prompt": "",
+    "followup_style": "auto",
+    "followup_hourly_limit": 3,
+    "followup_daily_limit": 10,
+    "followup_quiet_hours": "1-8",
 }
 
 _cache: dict[str, tuple[str | None, float]] = {}
@@ -66,6 +83,7 @@ def _data_dir() -> str:
 def _cfg_paths() -> list[str]:
     base = os.path.join(_data_dir(), "config")
     return [
+        os.path.join(base, "astrbot_plugin_better_qq_config.json"),
         os.path.join(base, "astrbot_plugin_qq_image_fix_config.json"),
         os.path.join(base, "qq_image_fix_config.json"),
     ]
@@ -75,7 +93,7 @@ def _load_cfg() -> dict:
     user = {}
     for path in _cfg_paths():
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(path, encoding="utf-8-sig") as f:
                 user = json.load(f)
             break
         except Exception:
@@ -421,17 +439,93 @@ async def _recent_image_paths(group_id: str, now: float, cfg: dict) -> list[str]
 class QQImageFix(Star):
     def __init__(self, context: Context):
         super().__init__(context)
+        self._fu_pending: dict[str, tuple[str, str, float]] = {}
+        self._fu_last: dict[str, float] = {}
+        self._fu_tasks: set = set()
+        self._fu_last_user: dict[str, float] = {}
+        self._fu_ctx: dict[str, list[str]] = {}
+        self._fu_hour: dict[tuple[str, str], int] = {}
+        self._fu_day: dict[tuple[str, str], int] = {}
         try:
             _install_patch()
             logger.info("[better_qq] 补丁已安装")
         except Exception as e:
             logger.error(f"[better_qq] 安装补丁失败: {e}")
 
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def _fu_track_user(self, event: AstrMessageEvent):
+        """记录用户最后发言时间，供补话前判断是否已有新消息。"""
+        try:
+            if _load_cfg().get("followup_enable", False):
+                self._fu_last_user[event.unified_msg_origin] = time.time()
+        except Exception:
+            pass
+
+    def _fu_in_quiet(self, cfg: dict) -> bool:
+        try:
+            raw = str(cfg.get("followup_quiet_hours", "") or "").strip()
+            if not raw or "-" not in raw:
+                return False
+            a, b = raw.split("-", 1)
+            start, end = int(a), int(b)
+            h = time.localtime().tm_hour
+            if start <= end:
+                return start <= h < end
+            return h >= start or h < end
+        except Exception:
+            return False
+
+    def _fu_caps_ok(self, cfg: dict, umo: str) -> bool:
+        try:
+            now = time.localtime()
+            hk = time.strftime("%Y-%m-%d %H", now)
+            dk = time.strftime("%Y-%m-%d", now)
+            hourly = int(cfg.get("followup_hourly_limit", 3) or 0)
+            daily = int(cfg.get("followup_daily_limit", 10) or 0)
+            if hourly > 0 and self._fu_hour.get((umo, hk), 0) >= hourly:
+                return False
+            if daily > 0 and self._fu_day.get((umo, dk), 0) >= daily:
+                return False
+            return True
+        except Exception:
+            return True
+
+    def _fu_mark_sent(self, umo: str) -> None:
+        now = time.localtime()
+        hk = time.strftime("%Y-%m-%d %H", now)
+        dk = time.strftime("%Y-%m-%d", now)
+        self._fu_hour[(umo, hk)] = self._fu_hour.get((umo, hk), 0) + 1
+        self._fu_day[(umo, dk)] = self._fu_day.get((umo, dk), 0) + 1
+        if len(self._fu_hour) > 500:
+            self._fu_hour.clear()
+        if len(self._fu_day) > 500:
+            self._fu_day.clear()
+
+    @staticmethod
+    def _fu_clean(text: str, max_chars: int) -> str:
+        import re
+
+        t = str(text or "").strip().strip('"').strip("“”").strip("「」")
+        t = t.replace("<none>", "").strip()
+        t = re.sub(r"[（(]\s*笑[\s）)]", "哈哈", t)
+        t = re.sub(r"[（(]\s*笑哭[\s）)]", "哈哈", t)
+        t = re.sub(r"[（(]\s*捂脸[\s）)]", "哈哈", t)
+        for act in ("挠头", "小声", "认真", "凑过来", "比划", "低头", "笑了一下"):
+            pat = re.compile(r"[（(]\s*" + act + r"\s*[）)]")
+            matches = list(pat.finditer(t))
+            while len(matches) > 1:
+                m = matches[-1]
+                t = t[: m.start()] + t[m.end():]
+                matches = list(pat.finditer(t))
+        t = t.replace("\n", " ").strip()
+        return t[: max_chars + 10]
+
     @filter.on_decorating_result()
     async def on_decorating(self, event: AstrMessageEvent):
         """决定这条回复要不要引用：被 @ 必引用；每条新消息的首条回复必引用；其余按概率。"""
         try:
             import random
+            import re
 
             cfg = _load_cfg()
             if not cfg.get("enabled", True):
@@ -491,6 +585,25 @@ class QQImageFix(Star):
             cfg = _load_cfg()
             if not cfg.get("enabled", True):
                 return
+            # 自动补话用：记录最近几条对话上下文
+            if cfg.get("followup_enable", False):
+                try:
+                    ctx = getattr(req, "contexts", None) or []
+                    lines: list[str] = []
+                    for m in ctx[-4:]:
+                        role = str(m.get("role") or "")
+                        content = m.get("content")
+                        if isinstance(content, list):
+                            content = "".join(
+                                str(x.get("text") or "") for x in content if isinstance(x, dict)
+                            )
+                        content = str(content or "").strip().replace("\n", " ")
+                        if content:
+                            lines.append(("对方" if role == "user" else "你") + ": " + content[:80])
+                    if lines:
+                        self._fu_ctx[event.unified_msg_origin] = lines[-4:]
+                except Exception:
+                    pass
             comps = event.get_messages() or []
             has_text = any(str(getattr(c, "text", "") or "").strip() for c in comps)
             imgs = [c for c in comps if isinstance(c, Image)]
@@ -583,3 +696,134 @@ class QQImageFix(Star):
                     logger.info(f"[better_qq] 已补入自己账号的 {len(self_texts)} 条消息")
         except Exception as e:
             logger.warning(f"[better_qq] on_llm error: {e}")
+    # ------------------------------------------------------------------
+    # 自动补话：对方一条消息里说了几件事/问了几件事的时候，正常回复之后
+    # 再补一句，不用等对方再发消息。逻辑合并自独立插件 auto_followup。
+    # ------------------------------------------------------------------
+    @filter.on_llm_response()
+    async def _fu_capture(self, event: AstrMessageEvent, response=None):
+        try:
+            if not _load_cfg().get("followup_enable", False):
+                return
+            bot = getattr(response, "completion_text", "") or ""
+            if not bot:
+                return
+            user = ""
+            try:
+                user = event.message_str or ""
+            except Exception:
+                pass
+            self._fu_pending[event.unified_msg_origin] = (user, bot, time.time())
+        except Exception as e:
+            logger.warning(f"[better_qq] followup capture: {e}")
+
+    @filter.after_message_sent()
+    async def _fu_after(self, event: AstrMessageEvent):
+        try:
+            cfg = _load_cfg()
+            if not cfg.get("followup_enable", False):
+                return
+            umo = event.unified_msg_origin
+            item = self._fu_pending.pop(umo, None)
+            if not item:
+                return
+            user, bot, _ts = item
+            now = time.time()
+            cooldown = float(cfg.get("followup_cooldown_seconds", 120))
+            if now - self._fu_last.get(umo, 0) < cooldown:
+                return
+            is_private = not str(event.get_group_id() or "").strip()
+            if cfg.get("followup_private_only", True) and not is_private:
+                return
+            group_id = str(event.get_group_id() or "").strip()
+            if group_id and cfg.get("scope_groups") and group_id not in cfg["scope_groups"]:
+                return
+            if not self._fu_is_multi(cfg, user):
+                return
+            if "\n" in bot or len(bot) >= int(cfg.get("followup_max_reply_chars", 60)):
+                return
+            task = asyncio.create_task(self._fu_run(umo, user, bot, _ts))
+            self._fu_tasks.add(task)
+            task.add_done_callback(self._fu_tasks.discard)
+        except Exception as e:
+            logger.warning(f"[better_qq] followup after: {e}")
+
+    def _fu_is_multi(self, cfg: dict, text: str) -> bool:
+        try:
+            s = text or ""
+            questions = s.count("？") + s.count("?")
+            lines = len([x for x in s.split("\n") if x.strip()])
+            if questions >= int(cfg.get("followup_min_questions", 2)):
+                return True
+            if lines >= int(cfg.get("followup_min_lines", 2)) and len(s) >= int(cfg.get("followup_min_chars", 12)):
+                return True
+            return False
+        except Exception:
+            return False
+
+    async def _fu_persona_prompt(self, umo: str) -> str:
+        if not _load_cfg().get("followup_use_persona", True):
+            return ""
+        try:
+            pm = getattr(self.context, "persona_manager", None)
+            if pm is None:
+                return ""
+            persona = await pm.get_default_persona_v3(umo)
+            return str(getattr(persona, "system_prompt", "") or "")
+        except Exception:
+            return ""
+
+    async def _fu_run(self, umo: str, user: str, bot: str, capture_ts: float = 0.0) -> None:
+        try:
+            cfg = _load_cfg()
+            await asyncio.sleep(float(cfg.get("followup_delay_seconds", 1.6)))
+            # A：延迟期间用户又发了新消息，就不补了
+            if capture_ts and self._fu_last_user.get(umo, 0) > capture_ts:
+                logger.info("[better_qq] 补话取消：延迟期间已有新消息")
+                return
+            # F：夜间静音
+            if self._fu_in_quiet(cfg):
+                return
+            # D：每小时/每天上限
+            if not self._fu_caps_ok(cfg, umo):
+                logger.info("[better_qq] 补话跳过：达到每小时/每天上限")
+                return
+            provider = self.context.get_using_provider(umo)
+            if provider is None:
+                return
+            max_chars = int(cfg.get("followup_max_send_chars", 40))
+            style = str(cfg.get("followup_style", "auto") or "auto").strip().lower()
+            style_hint = {
+                "ask": "如果对方有还没被你回应/没答的问题，追问一句；没有就只输出 <none>。",
+                "care": "补一句关心对方的话（累不累、吃了没之类），自然一点别客套；没有合适的就只输出 <none>。",
+                "share": "补一句你自己的近况或刚发生的小事，像顺口说的；没有就只输出 <none>。",
+                "joke": "补一句轻松的笑话或吐槽，别冒犯；没有就只输出 <none>。",
+            }.get(
+                style,
+                "如果对方还有没被你回应到的内容（比如第二个问题、另一件事），补一句很短的话；没有就只输出 <none>。",
+            )
+            ctx_lines = self._fu_ctx.get(umo) or []
+            ctx_text = "\n".join(ctx_lines[-3:]) if ctx_lines else ""
+            prompt = (
+                "最近对话：\n" + (ctx_text or "（无）")
+                + "\n\n对方刚发来的消息：\n" + (user or "")[:300]
+                + "\n\n你已经回过：\n" + (bot or "")[:200]
+                + "\n\n" + style_hint
+                + f"\n要求：一句话、{max_chars} 字以内、像真人打字、不要重复刚才说过的、不用 emoji、不用（笑）。只输出这句话。"
+            )
+            system_prompt = await self._fu_persona_prompt(umo)
+            extra = str(cfg.get("followup_extra_prompt", "") or "").strip()
+            if extra:
+                system_prompt = (system_prompt + "\n" + extra).strip()
+            response = await provider.text_chat(prompt=prompt, system_prompt=system_prompt or None)
+            text = self._fu_clean(getattr(response, "completion_text", "") or "", max_chars)
+            if not text or len(text) > max_chars + 10:
+                return
+            if len(text) > max_chars:
+                text = text[:max_chars]
+            self._fu_last[umo] = time.time()
+            self._fu_mark_sent(umo)
+            logger.info(f"[better_qq] 自动补话: {text}")
+            await self.context.send_message(umo, MessageChain([Plain(text=text)]))
+        except Exception as e:
+            logger.warning(f"[better_qq] followup run: {e}")

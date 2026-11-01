@@ -141,5 +141,92 @@
         }
       }
     }
+  },
+  "followup": {
+    "description": "自动补话（回完再补一句）",
+    "type": "object",
+    "hint": "对方一条消息里说了几件事、问了几个问题时，正常回复后再补一句，不用等对方再发消息。默认关闭，按需打开。",
+    "items": {
+      "followup_enable": {
+        "description": "启用自动补话",
+        "type": "bool",
+        "default": false
+      },
+      "followup_private_only": {
+        "description": "只对私聊生效",
+        "type": "bool",
+        "default": true
+      },
+      "followup_delay_seconds": {
+        "description": "补话延迟（秒）",
+        "type": "float",
+        "default": 1.6,
+        "hint": "主回复发出后等多久再补这一句"
+      },
+      "followup_cooldown_seconds": {
+        "description": "补话冷却（秒）",
+        "type": "int",
+        "default": 120,
+        "hint": "同一会话两次补话的最小间隔，防刷屏"
+      },
+      "followup_min_questions": {
+        "description": "触发条件：至少几个问号",
+        "type": "int",
+        "default": 2
+      },
+      "followup_min_lines": {
+        "description": "触发条件：至少几行",
+        "type": "int",
+        "default": 2
+      },
+      "followup_min_chars": {
+        "description": "触发条件：多行消息至少几个字",
+        "type": "int",
+        "default": 12
+      },
+      "followup_max_reply_chars": {
+        "description": "主回复超过多少字就不补",
+        "type": "int",
+        "default": 60
+      },
+      "followup_max_send_chars": {
+        "description": "补话最长多少字",
+        "type": "int",
+        "default": 40
+      },
+      "followup_use_persona": {
+        "description": "补话时沿用当前会话人格",
+        "type": "bool",
+        "default": true
+      },
+      "followup_extra_prompt": {
+        "description": "追加给模型的补充要求（可留空）",
+        "type": "string",
+        "default": "",
+        "hint": "例如：说话再短一点、别反问"
+      },
+      "followup_style": {
+        "description": "补话类型",
+        "type": "string",
+        "default": "auto",
+        "hint": "auto=补没回应的内容；ask=追问；care=关心；share=分享自己；joke=玩笑"
+      },
+      "followup_hourly_limit": {
+        "description": "每小时最多补几次（0=不限）",
+        "type": "int",
+        "default": 3
+      },
+      "followup_daily_limit": {
+        "description": "每天最多补几次（0=不限）",
+        "type": "int",
+        "default": 10
+      },
+      "followup_quiet_hours": {
+        "description": "静音时段（不补话）",
+        "type": "string",
+        "default": "1-8",
+        "hint": "如 1-8 表示凌晨 1 点到 8 点不补；留空=不限"
+      }
+    }
   }
 }
