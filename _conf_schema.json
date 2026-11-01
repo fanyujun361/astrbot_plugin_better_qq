@@ -260,6 +260,12 @@
         "description": "每条之间的间隔（秒）",
         "type": "float",
         "default": 3.0
+      },
+      "multi_reply_image_window": {
+        "description": "截图和文字分开发时的有效期（秒）",
+        "type": "int",
+        "default": 180,
+        "hint": "先发截图、再发文字要求，在这个时间内仍会触发逐条回复；0=只认同一条消息"
       }
     }
   }
