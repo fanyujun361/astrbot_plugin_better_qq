@@ -226,6 +226,12 @@
         "type": "string",
         "default": "1-8",
         "hint": "如 1-8 表示凌晨 1 点到 8 点不补；留空=不限"
+      },
+      "followup_question_words": {
+        "description": "疑问词表（逗号分隔）",
+        "type": "string",
+        "default": "吗,呢,吧,多少,什么,为什么,怎么,哪,几点,有没有,没",
+        "hint": "一句话里出现 2 个以上这些词，也算多问题"
       }
     }
   },
