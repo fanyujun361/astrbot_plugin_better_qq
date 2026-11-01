@@ -228,5 +228,33 @@
         "hint": "如 1-8 表示凌晨 1 点到 8 点不补；留空=不限"
       }
     }
+  },
+  "multi_reply": {
+    "description": "多评论逐条回复",
+    "type": "object",
+    "hint": "用户发截图并要求逐条回应时，一次性生成多条回复并自动依次发送，不用对方再催",
+    "items": {
+      "multi_reply_enable": {
+        "description": "启用逐条回复",
+        "type": "bool",
+        "default": true
+      },
+      "multi_reply_keywords": {
+        "description": "触发词（逗号分隔）",
+        "type": "string",
+        "default": "分别回复,每条评论,每个评论,一条条,逐条,分别回",
+        "hint": "用户消息带截图且包含这些词时触发"
+      },
+      "multi_reply_max": {
+        "description": "最多自动回复几条",
+        "type": "int",
+        "default": 12
+      },
+      "multi_reply_delay": {
+        "description": "每条之间的间隔（秒）",
+        "type": "float",
+        "default": 3.0
+      }
+    }
   }
 }
