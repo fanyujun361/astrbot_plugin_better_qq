@@ -68,7 +68,7 @@ DEFAULTS = {
     "followup_extra_prompt": "",
     "followup_style": "auto",
     "followup_hourly_limit": 3,
-    "followup_daily_limit": 10,
+    "followup_daily_limit": 5,
     "followup_quiet_hours": "1-8",
     "followup_question_words": "吗,呢,吧,多少,什么,为什么,怎么,哪,几点,有没有,没",
     # 多评论逐条回复
