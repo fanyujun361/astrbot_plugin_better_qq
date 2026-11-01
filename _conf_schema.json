@@ -219,7 +219,7 @@
       "followup_daily_limit": {
         "description": "每天最多补几次（0=不限）",
         "type": "int",
-        "default": 10
+        "default": 5
       },
       "followup_quiet_hours": {
         "description": "静音时段（不补话）",
