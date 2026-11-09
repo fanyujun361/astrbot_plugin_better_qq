@@ -77,10 +77,18 @@ DEFAULTS = {
     "multi_reply_max": 12,
     "multi_reply_delay": 3.0,
     "multi_reply_image_window": 180,
+    "multi_reply_private_only": True,
 }
 
 _cache: dict[str, tuple[str | None, float]] = {}
 _last_history_fetch: dict[str, float] = {}
+# 配置/Token/历史消息缓存，减少每事件同步读盘与重复 HTTP 请求
+_CFG_CACHE: dict = {"key": None, "cfg": None, "ts": 0.0}
+_TOKEN_CACHE: dict = {"token": "", "ts": 0.0}
+_HISTORY_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_SNOWLUMA_DOWN_UNTIL: float = 0.0
+_HISTORY_TTL = 2.5
+_SNOWLUMA_COOLDOWN = 30.0
 
 
 def _data_dir() -> str:
@@ -96,7 +104,26 @@ def _cfg_paths() -> list[str]:
     ]
 
 
+def _cfg_key():
+    key = []
+    for path in _cfg_paths():
+        try:
+            key.append((path, os.path.getmtime(path)))
+        except OSError:
+            key.append((path, None))
+    return tuple(key)
+
+
 def _load_cfg() -> dict:
+    global _CFG_CACHE
+    key = _cfg_key()
+    now = time.time()
+    if (
+        _CFG_CACHE.get("key") == key
+        and _CFG_CACHE.get("cfg") is not None
+        and now - float(_CFG_CACHE.get("ts") or 0) < 2.0
+    ):
+        return _CFG_CACHE["cfg"]
     user = {}
     for path in _cfg_paths():
         try:
@@ -124,29 +151,33 @@ def _load_cfg() -> dict:
         cfg["scope_groups"] = [str(x) for x in (cfg["scope_groups"] or [])]
     except Exception:
         pass
+    _CFG_CACHE = {"key": key, "cfg": cfg, "ts": now}
     return cfg
 
 
 def _load_token() -> str:
-    # 优先用配置里手填的 token，其次自动读取本机 SnowLuma 配置
+    now = time.time()
+    if _TOKEN_CACHE.get("ts") and now - float(_TOKEN_CACHE["ts"]) < 60:
+        return str(_TOKEN_CACHE.get("token") or "")
+    token = ""
     try:
         token = str(_load_cfg().get("snowluma_token") or "").strip()
-        if token:
-            return token
     except Exception:
         pass
-    try:
-        cfg_path = os.path.join(
-            os.environ.get("LOCALAPPDATA", ""), "QQBot", "SnowLuma", "config", "onebot.json"
-        )
-        with open(cfg_path, encoding="utf-8") as f:
-            cfg = json.load(f)
-        servers = (cfg.get("networks") or {}).get("httpServers") or []
-        if servers and servers[0].get("accessToken"):
-            return str(servers[0]["accessToken"])
-    except Exception:
-        pass
-    return ""
+    if not token:
+        try:
+            cfg_path = os.path.join(
+                os.environ.get("LOCALAPPDATA", ""), "QQBot", "SnowLuma", "config", "onebot.json"
+            )
+            with open(cfg_path, encoding="utf-8-sig") as f:
+                cfg = json.load(f)
+            servers = (cfg.get("networks") or {}).get("httpServers") or []
+            if servers and servers[0].get("accessToken"):
+                token = str(servers[0]["accessToken"])
+        except Exception:
+            token = ""
+    _TOKEN_CACHE.update({"token": token, "ts": now})
+    return token
 
 
 def _base_url() -> str:
@@ -160,28 +191,47 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {_load_token()}"}
 
 
-async def _resolve(filename: str) -> str | None:
+async def _snowluma_post(path: str, payload: dict) -> dict | None:
+    """请求 SnowLuma HTTP API；连续失败时熔断 30 秒，避免刷屏和拖慢回复。"""
+    global _SNOWLUMA_DOWN_UNTIL
+    now = time.time()
+    if now < _SNOWLUMA_DOWN_UNTIL:
+        return None
     if not _load_token():
         return None
-    now = time.time()
-    hit = _cache.get(filename)
-    if hit and now - hit[1] < CACHE_TTL:
-        return hit[0]
-    url = None
     try:
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                f"{_base_url()}/get_image", json={"file": filename}, headers=_headers()
+                f"{_base_url()}{path}", json=payload, headers=_headers()
             ) as resp:
-                payload = await resp.json(content_type=None)
-        if payload.get("retcode") == 0:
-            data = payload.get("data") or {}
-            candidate = data.get("url") or data.get("file") or ""
-            if "rkey=" in candidate:
-                url = candidate
+                return await resp.json(content_type=None)
     except Exception as e:
-        logger.warning(f"[better_qq] get_image 异常 {filename}: {type(e).__name__}: {e}")
+        if isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError, OSError)):
+            if now >= _SNOWLUMA_DOWN_UNTIL:
+                _SNOWLUMA_DOWN_UNTIL = now + _SNOWLUMA_COOLDOWN
+                logger.warning(
+                    f"[better_qq] SnowLuma 连接异常，{int(_SNOWLUMA_COOLDOWN)} 秒内暂停查询: {type(e).__name__}"
+                )
+        else:
+            logger.warning(f"[better_qq] SnowLuma 请求失败: {type(e).__name__}: {e}")
+        return None
+
+
+async def _resolve(filename: str) -> str | None:
+    now = time.time()
+    if now < _SNOWLUMA_DOWN_UNTIL:
+        return None
+    hit = _cache.get(filename)
+    if hit and now - hit[1] < CACHE_TTL:
+        return hit[0]
+    url = None
+    payload = await _snowluma_post("/get_image", {"file": filename})
+    if payload and payload.get("retcode") == 0:
+        data = payload.get("data") or {}
+        candidate = data.get("url") or data.get("file") or ""
+        if "rkey=" in candidate:
+            url = candidate
     _cache[filename] = (url, now)
     return url
 
@@ -230,44 +280,41 @@ def _install_patch() -> None:
     Image.convert_to_base64 = patched_to_b64
 
 
+def _history_key(kind: str, ident: str) -> str:
+    return f"{kind}:{ident}"
+
+
+async def _fetch_history(kind: str, ident: str, count: int) -> list[dict]:
+    now = time.time()
+    key = _history_key(kind, ident)
+    hit = _HISTORY_CACHE.get(key)
+    if hit and now - hit[0] < _HISTORY_TTL:
+        return hit[1]
+    if kind == "group":
+        payload = await _snowluma_post(
+            "/get_group_msg_history", {"group_id": int(ident), "count": count}
+        )
+    else:
+        payload = await _snowluma_post(
+            "/get_friend_msg_history", {"user_id": int(ident), "count": count}
+        )
+    if not payload or payload.get("retcode") != 0:
+        _HISTORY_CACHE[key] = (now, [])
+        return []
+    messages = (payload.get("data") or {}).get("messages") or []
+    _HISTORY_CACHE[key] = (now, messages)
+    if len(_HISTORY_CACHE) > 50:
+        for old_key in list(_HISTORY_CACHE.keys())[:10]:
+            _HISTORY_CACHE.pop(old_key, None)
+    return messages
+
+
 async def _fetch_recent_messages(group_id: str, count: int = 20) -> list[dict]:
-    if not _load_token():
-        return []
-    try:
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{_base_url()}/get_group_msg_history",
-                json={"group_id": int(group_id), "count": count},
-                headers=_headers(),
-            ) as resp:
-                payload = await resp.json(content_type=None)
-        if payload.get("retcode") != 0:
-            return []
-        return (payload.get("data") or {}).get("messages") or []
-    except Exception as e:
-        logger.warning(f"[better_qq] 拉取群历史失败: {type(e).__name__}: {e}")
-        return []
+    return await _fetch_history("group", str(group_id), count)
 
 
 async def _fetch_friend_messages(user_id: str, count: int = 30) -> list[dict]:
-    if not _load_token():
-        return []
-    try:
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{_base_url()}/get_friend_msg_history",
-                json={"user_id": int(user_id), "count": count},
-                headers=_headers(),
-            ) as resp:
-                payload = await resp.json(content_type=None)
-        if payload.get("retcode") != 0:
-            return []
-        return (payload.get("data") or {}).get("messages") or []
-    except Exception as e:
-        logger.warning(f"[better_qq] 拉取好友历史失败: {type(e).__name__}: {e}")
-        return []
+    return await _fetch_history("friend", str(user_id), count)
 
 
 async def _download(url: str) -> str | None:
@@ -442,7 +489,7 @@ async def _recent_image_paths(group_id: str, now: float, cfg: dict) -> list[str]
     return paths
 
 
-@register("better_qq", "local", "更好的QQ体验", "1.0.0")
+@register("better_qq", "local", "更好的QQ体验", "1.2.6")
 class QQImageFix(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -463,12 +510,22 @@ class QQImageFix(Star):
         except Exception as e:
             logger.error(f"[better_qq] 安装补丁失败: {e}")
 
+    @staticmethod
+    def _cap_dict(d: dict, limit: int = 200) -> None:
+        try:
+            while len(d) > limit:
+                d.pop(next(iter(d)))
+        except Exception:
+            pass
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def _fu_track_user(self, event: AstrMessageEvent):
-        """记录用户最后发言时间，供补话前判断是否已有新消息。"""
+        """记录用户最后发言时间，供补话/逐条回复判断是否已有新消息。"""
         try:
-            if _load_cfg().get("followup_enable", False):
+            cfg = _load_cfg()
+            if cfg.get("followup_enable", False) or cfg.get("multi_reply_enable", True):
                 self._fu_last_user[event.unified_msg_origin] = time.time()
+                self._cap_dict(self._fu_last_user)
         except Exception:
             pass
 
@@ -547,37 +604,6 @@ class QQImageFix(Star):
                 if is_private
                 else cfg.get("quote_probability_group", 0.25)
             )
-
-            # 多评论逐条回复：用户带截图并要求逐条回应
-            if cfg.get("multi_reply_enable", True):
-                try:
-                    _txt = str(event.message_str or "").strip()
-                    _kws = [k.strip() for k in str(cfg.get("multi_reply_keywords", "") or "").split(",") if k.strip()]
-                    _msg_list = event.get_messages() or []
-                    _has_img = any(isinstance(x, Image) for x in _msg_list)
-                    _now = time.time()
-                    if _has_img:
-                        self._mr_last_img[event.unified_msg_origin] = _now
-                    _window = float(cfg.get("multi_reply_image_window", 180) or 180)
-                    _recent_img = (
-                        not _has_img
-                        and _window > 0
-                        and _now - self._mr_last_img.get(event.unified_msg_origin, 0) <= _window
-                    )
-                    if (_has_img or _recent_img) and _kws and any(k in _txt for k in _kws):
-                        self._mr_pending[event.unified_msg_origin] = time.time()
-                        _hint = (
-                            "\n[系统指令：对方要求你逐条回复他刚才发的那张截图里的每一条评论（截图可能在上一条消息里）。"
-                            "请按截图从上到下的顺序逐条回应，每条之间用 ||| 分隔，每条不超过 60 字；"
-                            "不要编号、不要解释、不要遗漏；只输出这些回复。]"
-                        )
-                        try:
-                            req.prompt = (req.prompt or "") + _hint
-                        except Exception:
-                            pass
-                        logger.info("[better_qq] 已启用逐条回复模式")
-                except Exception:
-                    pass
             comps = event.get_messages() or []
             has_media = any(isinstance(c, Image) for c in comps)
             plain_text = "".join(
@@ -643,6 +669,7 @@ class QQImageFix(Star):
                             lines.append(("对方" if role == "user" else "你") + ": " + content[:80])
                     if lines:
                         self._fu_ctx[event.unified_msg_origin] = lines[-4:]
+                        self._cap_dict(self._fu_ctx)
                 except Exception:
                     pass
             comps = event.get_messages() or []
@@ -652,6 +679,48 @@ class QQImageFix(Star):
             now = time.time()
             if cfg["scope_groups"] and group_id and group_id not in cfg["scope_groups"]:
                 return
+
+            # 清理过期的逐条回复标记
+            try:
+                _now_ts = time.time()
+                for _k in [k for k, v in self._mr_pending.items() if _now_ts - float(v) > 180]:
+                    self._mr_pending.pop(_k, None)
+            except Exception:
+                pass
+
+            # 多评论逐条回复：用户带截图并要求逐条回应（截图/文字可分两条发，窗口内有效）
+            if cfg.get("multi_reply_enable", True):
+                try:
+                    _txt = str(event.message_str or "").strip()
+                    _kws = [k.strip() for k in str(cfg.get("multi_reply_keywords", "") or "").split(",") if k.strip()]
+                    _msg_list = event.get_messages() or []
+                    _has_img = any(isinstance(x, Image) for x in _msg_list)
+                    _now = time.time()
+                    if _has_img:
+                        self._mr_last_img[event.unified_msg_origin] = _now
+                        self._cap_dict(self._mr_last_img)
+                    _window = float(cfg.get("multi_reply_image_window", 180) or 180)
+                    _recent_img = (
+                        not _has_img
+                        and _window > 0
+                        and _now - self._mr_last_img.get(event.unified_msg_origin, 0) <= _window
+                    )
+                    _private_only = bool(cfg.get("multi_reply_private_only", True))
+                    _allowed = (not _private_only) or not group_id
+                    if _allowed and (_has_img or _recent_img) and _kws and any(k in _txt for k in _kws):
+                        self._mr_pending[event.unified_msg_origin] = _now
+                        _hint = (
+                            "\n[系统指令：对方要求你逐条回复他刚才发的那张截图里的每一条评论（截图可能在上一条消息里）。"
+                            "请按截图从上到下的顺序逐条回应，每条之间用 ||| 分隔，每条不超过 60 字；"
+                            "不要编号、不要解释、不要遗漏；只输出这些回复。]"
+                        )
+                        try:
+                            req.prompt = (req.prompt or "") + _hint
+                        except Exception:
+                            pass
+                        logger.info("[better_qq] 已启用逐条回复模式")
+                except Exception:
+                    pass
 
             # 1) 当前消息没图：先看是否在引用某张图，再看最近发过的图
             if cfg.get("inject_recent_images", True) and not imgs and not req.image_urls and group_id:
@@ -763,11 +832,15 @@ class QQImageFix(Star):
         """逐条回复：拆分模型输出，只留第一条给主流程发，其余排队。"""
         try:
             umo = event.unified_msg_origin
-            if umo not in self._mr_pending:
+            ts = self._mr_pending.get(umo)
+            if ts is None:
+                return
+            self._mr_pending.pop(umo, None)
+            if time.time() - float(ts) > 180:
+                logger.info("[better_qq] 逐条回复：请求已过期，跳过")
                 return
             cfg = _load_cfg()
             text = getattr(response, "completion_text", "") or ""
-            self._mr_pending.pop(umo, None)
             if "|||" not in text:
                 return
             parts = [p.strip() for p in text.split("|||") if p.strip()]
@@ -807,6 +880,9 @@ class QQImageFix(Star):
         try:
             for text in parts:
                 await asyncio.sleep(delay)
+                if not _load_cfg().get("multi_reply_enable", True):
+                    logger.info("[better_qq] 逐条回复：功能已关闭，停止剩余发送")
+                    return
                 if self._fu_last_user.get(umo, 0) > start:
                     logger.info("[better_qq] 逐条回复：收到新消息，停止剩余发送")
                     return
