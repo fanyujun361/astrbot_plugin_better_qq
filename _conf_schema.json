@@ -91,9 +91,10 @@
         "default": 0.25
       },
       "quote_probability_private": {
-        "description": "私聊：同一条消息后续回复的引用概率（0~1）",
+        "description": "群聊/私聊短句不引用；私聊长消息或带图必引用（此项对私聊暂不生效）",
         "type": "float",
-        "default": 0.25
+        "default": 0.25,
+        "hint": "私聊引用规则：超过 quote_private_min_length 字或带图时必引用；短句不引用"
       },
       "quote_private_min_length": {
         "description": "私聊：消息至少多少字才引用",
@@ -266,6 +267,12 @@
         "type": "int",
         "default": 180,
         "hint": "先发截图、再发文字要求，在这个时间内仍会触发逐条回复；0=只认同一条消息"
+      },
+      "multi_reply_private_only": {
+        "description": "只对私聊生效",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后群里不会触发逐条回复，避免刷屏"
       }
     }
   }
